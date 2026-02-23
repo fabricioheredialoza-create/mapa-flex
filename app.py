@@ -3,7 +3,7 @@ import pandas as pd
 import folium
 from streamlit_folium import st_folium
 from geopy.distance import geodesic
-import io # <-- NUEVA LIBRERÍA para manejar la creación del archivo en memoria
+import io 
 
 # Configuración de página
 st.set_page_config(page_title="Mapa Logístico - Análisis de Clientes", layout="wide")
@@ -13,7 +13,42 @@ st.title("🗺️ Mapa Interactivo: Análisis de Cobertura y Días de Entrega")
 def load_data(file):
     return pd.read_excel(file)
 
-uploaded_file = st.sidebar.file_uploader("Sube tu Base de Datos (Excel)", type=["xlsx", "xls"])
+# --- NUEVO: Template de la Base de Datos Principal ---
+st.sidebar.header("📥 1. Formato de Base de Datos")
+st.sidebar.write("Descarga esta plantilla para ver cómo estructurar tus datos antes de subirlos:")
+
+# Creamos una fila de ejemplo real para guiar al usuario
+template_main_data = {
+    'CD': [95],
+    'CODCLI': [922245],
+    'X': [-63.683707],
+    'Y': [-22.052948],
+    'LU': [1],
+    'MA': [1],
+    'MI': [0],
+    'JU': [0],
+    'VI': [1],
+    'SA': [0]
+}
+df_template_main = pd.DataFrame(template_main_data)
+
+buffer_main = io.BytesIO()
+with pd.ExcelWriter(buffer_main, engine='openpyxl') as writer:
+    df_template_main.to_excel(writer, index=False, sheet_name='Base_Datos')
+
+st.sidebar.download_button(
+    label="⬇️ Descargar Plantilla Base",
+    data=buffer_main.getvalue(),
+    file_name="template_base_clientes.xlsx",
+    mime="application/vnd.ms-excel",
+    help="Contiene los encabezados correctos y un ejemplo de cómo llenar las coordenadas."
+)
+
+st.sidebar.markdown("---")
+
+# --- CARGA DEL ARCHIVO ---
+st.sidebar.header("📤 2. Sube tu Base de Datos")
+uploaded_file = st.sidebar.file_uploader("Carga el archivo Excel aquí", type=["xlsx", "xls"])
 
 if uploaded_file:
     df = load_data(uploaded_file)
@@ -24,7 +59,7 @@ if uploaded_file:
         df['Y'] = pd.to_numeric(df['Y'].astype(str).str.replace(',', '.'), errors='coerce')
     
     st.sidebar.markdown("---")
-    st.sidebar.header("1. Filtros Generales")
+    st.sidebar.header("3. Filtros Generales")
     
     # Filtro por CD
     lista_cd = df['CD'].dropna().unique().tolist()
@@ -34,17 +69,15 @@ if uploaded_file:
     dias = ['LU', 'MA', 'MI', 'JU', 'VI', 'SA']
     selected_day = st.sidebar.selectbox("Selecciona el Día a analizar", dias)
     
-    # 1. Filtramos por CD
+    # Filtramos por CD y eliminamos coordenadas inválidas
     df_cd = df[df['CD'] == selected_cd].copy()
-    
-    # 2. Eliminamos los clientes que no tengan coordenadas válidas después de la limpieza
     df_cd = df_cd.dropna(subset=['X', 'Y']) 
     
     if df_cd.empty:
         st.warning(f"No hay clientes con coordenadas válidas para el CD {selected_cd}.")
     else:
         st.sidebar.markdown("---")
-        st.sidebar.header("2. Búsqueda de Clientes")
+        st.sidebar.header("4. Búsqueda de Clientes")
         search_type = st.sidebar.radio("Modalidad de búsqueda", ["Individual", "Masiva (Excel)"])
         
         target_clients = []
@@ -57,25 +90,19 @@ if uploaded_file:
                 except ValueError:
                     st.sidebar.error("El CODCLI debe ser numérico.")
         else:
-            # --- NUEVO: Generar y ofrecer el template de descarga ---
-            # Creamos un DataFrame vacío solo con la columna CODCLI
+            # Template para búsqueda masiva
             template_df = pd.DataFrame(columns=['CODCLI'])
-            
-            # Lo guardamos en memoria (buffer)
-            buffer = io.BytesIO()
-            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+            buffer_mass = io.BytesIO()
+            with pd.ExcelWriter(buffer_mass, engine='openpyxl') as writer:
                 template_df.to_excel(writer, index=False, sheet_name='Template')
             
-            # Botón de descarga
             st.sidebar.download_button(
-                label="⬇️ Descargar Template Excel",
-                data=buffer.getvalue(),
+                label="⬇️ Descargar Template de Búsqueda",
+                data=buffer_mass.getvalue(),
                 file_name="template_busqueda_masiva.xlsx",
-                mime="application/vnd.ms-excel",
-                help="Descarga este archivo, pega tus códigos en la columna CODCLI y súbelo abajo."
+                mime="application/vnd.ms-excel"
             )
             
-            # Subida del archivo masivo
             mass_file = st.sidebar.file_uploader("Sube tu template completado", type=["xlsx", "xls"], key="mass")
             if mass_file:
                 df_mass = load_data(mass_file)
@@ -84,10 +111,9 @@ if uploaded_file:
                 else:
                     st.sidebar.error("El archivo masivo debe tener una columna llamada 'CODCLI'.")
 
-        # Crear el mapa base centrado en el promedio del CD
+        # Crear mapa base
         cd_lat = df_cd['Y'].mean()
         cd_lon = df_cd['X'].mean()
-            
         m = folium.Map(location=[cd_lat, cd_lon], zoom_start=12)
         resultados = []
 
@@ -117,12 +143,10 @@ if uploaded_file:
                         fill_opacity=0.15
                     ).add_to(m)
                     
-                    # Calcular distancia a todos los puntos del CD
                     df_cd['Distancia_km'] = df_cd.apply(
                         lambda row: geodesic((t_lat, t_lon), (row['Y'], row['X'])).km, axis=1
                     )
                     
-                    # Filtrar clientes Free (Valor 1) a menos de 1km
                     clientes_radio = df_cd[(df_cd['Distancia_km'] <= 1) & (df_cd[selected_day] == 1)]
                     
                     resultados.append({
@@ -130,7 +154,6 @@ if uploaded_file:
                         f"Clientes Free ({selected_day}) a <1km": len(clientes_radio)
                     })
                     
-                    # Pintar los puntos en el mapa
                     for _, cliente in clientes_radio.iterrows():
                         if cliente['CODCLI'] != t_cod: 
                             folium.CircleMarker(
@@ -146,7 +169,6 @@ if uploaded_file:
         else:
             st.info("Vista general del CD cargada. Ingresa un CODCLI en la barra lateral para ver el análisis de radio.")
 
-        # Mostrar mapa y tabla en columnas
         col1, col2 = st.columns([2, 1])
         with col1:
             st.subheader(f"Mapa del CD: {selected_cd}")
